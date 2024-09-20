@@ -1,0 +1,137 @@
+import pandas as pd
+import datetime
+import requests
+import time
+import os
+import sys
+
+# 設定 BASE_URL
+BASE_URL = "https://api.distancematrix.ai"
+
+# 獲取當前腳本所在目錄，並設置文件路徑
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # 當前目錄
+TOKEN_FILE_PATH = os.path.join(BASE_DIR, "token.txt")  # 相對路徑 token.txt
+DATA_FILE_PATH = os.path.join(BASE_DIR, "data.xlsx")  # 讀取 Excel 文件
+RESULT_FILE_PATH = os.path.join(BASE_DIR, "result.xlsx")  # Excel 結果文件路徑
+
+# 檢查 API 金鑰和文件是否存在
+if not os.path.exists(TOKEN_FILE_PATH):
+    print('找不到 token.txt 檔案，請聯繫 alina.lysykh@distancematrix.ai 獲取幫助。\n')
+    input("按任意鍵退出")
+    sys.exit()
+
+if not os.path.exists(DATA_FILE_PATH):
+    print('找不到 data.xlsx 檔案，請聯繫 alina.lysykh@distancematrix.ai 獲取幫助。\n')
+    input("按任意鍵退出")
+    sys.exit()
+
+# 讀取 API 金鑰
+with open(TOKEN_FILE_PATH, "r", encoding='utf-8') as file:
+    API_KEY = file.read().strip()  # 移除空白字符
+    print(f'您的 API 金鑰為: "{API_KEY}"')
+
+
+# 讀取 Excel 數據
+def load_data():
+    count_rows = 0
+    data = []
+    df = pd.read_excel(DATA_FILE_PATH, sheet_name=0)  # 讀取 Excel 文件中的第一個工作表
+    for index, row in df.iterrows():
+        origin = row['origin']
+        destination = row['destination']
+        mode = row['mode']
+        traffic_model = row['traffic_model']
+        departure_time = row['departure_time']
+
+        data.append({
+            "origin": origin.replace('&', ' '),
+            "destination": destination.replace('&', ' '),
+            "mode": mode.replace('&', ' '),
+            "traffic_model": traffic_model.replace('&', ' '),
+            "departure_time": departure_time.replace('&', ' ')
+        })
+        count_rows += 1
+
+    print(f"\n總行數 = {count_rows}\n")
+    return data
+
+
+# 發送 API 請求
+def make_request(base_url, api_key, origin, destination, mode, traffic_model, departure_time):
+    url = f"{base_url}/maps/api/distancematrix/json" \
+          f"?key={api_key}&origins={origin}&destinations={destination}" \
+          f"&mode={mode}&traffic_model={traffic_model}&departure_time={departure_time}"
+
+    try:
+        result = requests.get(url)
+        return result.json()
+    except Exception as e:
+        print(f"API 請求失敗: {e}")
+        return None
+
+
+# 主程式
+def main():
+    data = load_data()
+    n = 0
+    result_data = []  # 用於存儲最終結果
+
+    for t in data:
+        time.sleep(1)  # 1秒延遲，防止API過量
+        request_time = datetime.datetime.now()
+        dm_res = make_request(BASE_URL, API_KEY, t['origin'], t['destination'], t['mode'], t['traffic_model'],
+                              t['departure_time'])
+
+        if not dm_res:
+            print(f"{n}) 無法獲取數據，請求失敗。")
+            continue
+
+        if dm_res.get('status') == 'REQUEST_DENIED':
+            print(f"API 請求被拒絕: {dm_res.get('error_message', '未知錯誤')}")
+            break
+
+        n += 1
+        try:
+            dm_distance = dm_res['rows'][0]['elements'][0]['distance']
+            dm_duration = dm_res['rows'][0]['elements'][0]['duration']
+            dm_duration_in_traffic = dm_res['rows'][0]['elements'][0].get('duration_in_traffic')
+            origin_addresses = dm_res['origin_addresses']
+            destination_addresses = dm_res['destination_addresses']
+
+            # 添加到結果數據列表
+            result_data.append([
+                request_time,
+                t['origin'],
+                t['destination'],
+                origin_addresses,
+                destination_addresses,
+                t['mode'],
+                t['traffic_model'],
+                t['departure_time'],
+                dm_distance['value'],
+                dm_distance['text'],
+                dm_duration['value'],
+                dm_duration['text'],
+                dm_duration_in_traffic['value'] if dm_duration_in_traffic else "N/A",
+                dm_duration_in_traffic['text'] if dm_duration_in_traffic else "N/A"
+            ])
+
+            print(
+                f"{n}) {t['origin']} -> {t['destination']} : [距離: {dm_distance['text']}] <> [時長: {dm_duration['text']}]")
+
+        except KeyError as exc:
+            print(f"{n}) 地址或座標無效: {exc}")
+            continue
+
+    # 將結果寫入 Excel 文件
+    result_df = pd.DataFrame(result_data, columns=[
+        '請求時間', '起點', '終點', '起點地址', '終點地址', '模式', '交通模型', '出發時間',
+        '距離 (公尺)', '距離 (文字)', '預估時長 (秒)', '預估時長 (文字)', '高峰期時長 (秒)', '高峰期時長 (文字)'
+    ])
+
+    result_df.to_excel(RESULT_FILE_PATH, index=False)  # 刪除 encoding 參數
+    print(f"結果已寫入 {RESULT_FILE_PATH}")
+
+
+if __name__ == '__main__':
+    main()
